@@ -1,0 +1,23 @@
+env_config_default = {
+    'headless': None,
+    'save_final_state': None,
+    'early_stop': None,
+    'action_freq': None,
+    'init_state': None,
+    'max_steps': None,
+    'print_rewards': None,
+    'save_video': None,
+    'fast_video': None,
+    'session_path': None,
+    'gb_path': None,
+    'debug': None,
+    'sim_frame_dist': None,
+    'use_screen_explore': None,
+    'reward_scale': None,
+    'extra_buttons': None,
+    'explore_weight': None,
+    'process_num': None,
+    'emulation_speed': None,
+    'batch_size': None,
+    'checkpoint': None
+}
