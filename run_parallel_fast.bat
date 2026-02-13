@@ -1,2 +1,2 @@
 @echo off
-python run_parallel_fast.py --headless false --process_num 1 --reward_scale 4 --save_video True --fast_video False
+.env\Scripts\python.exe run_parallel_fast.py --headless False --process_num 6 --save_video True --fast_video False --print_rewards True --train_iterations 4 --session_path .\Sessions\session_08b304ea

@@ -26,6 +26,17 @@ class TensorboardCallback(BaseCallback):
         super().__init__(verbose)
 
     def _on_step(self) -> bool:
+        all_progress_rewards = self.training_env.get_attr("progress_reward")
+        if all_progress_rewards:
+            avg_progress = merge_dicts_by_avg(all_progress_rewards)
+            for key, val in avg_progress.items():
+                self.logger.record(f"reward_components/{key}", val)
+
+        curriculum_phases = self.training_env.get_attr("curriculum_phase")
+        if curriculum_phases:
+            phase_map = {"beach": 0, "village": 1, "dungeon_entrance": 2, "single": 3}
+            phase_vals = [phase_map.get(str(phase), -1) for phase in curriculum_phases]
+            self.logger.record("curriculum/phase_index", float(np.mean(phase_vals)))
         
         if self.training_env.env_method("check_if_done", indices=[0])[0]:
             all_infos = self.training_env.get_attr("agent_stats")
@@ -35,6 +46,11 @@ class TensorboardCallback(BaseCallback):
                 avg_infos = merge_dicts_by_avg(all_final_infos)
                 for key, val in avg_infos.items():
                     self.logger.record(f"env_stats/{key}", val)
+
+                if "invalid_action_count" in avg_infos and "step" in avg_infos:
+                    episode_steps = max(1.0, float(avg_infos["step"]) + 1.0)
+                    mask_rate = float(avg_infos["invalid_action_count"]) / episode_steps
+                    self.logger.record("env_stats/action_mask_rate", mask_rate)
 
             images = self.training_env.env_method("render")
             images_arr = np.array(images)

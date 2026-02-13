@@ -1,8 +1,7 @@
 from os import makedirs
 from pathlib import Path
 from matplotlib.pyplot import imsave
-from cv2 import cvtColor, COLOR_GRAY2RGB, COLOR_RGBA2RGB
-from numpy import uint8
+from numpy import uint8, repeat
 
 def screenshot(s_path, instance_id, reset_count, total_reward, name, render):
     ss_dir = s_path / Path('screenshots')
@@ -17,13 +16,12 @@ def image_save(dir_path, render):
 
 def convert_to_rgb(image):
     if len(image.shape) == 2:  # Grayscale image
-        print("Image is grayscale")
-        image = cvtColor(image, COLOR_GRAY2RGB)
+        image = repeat(image[:, :, None], 3, axis=2)
     elif len(image.shape) == 3:
         if image.shape[2] == 1:  # Grayscale image with single channel
-            image = cvtColor(image, COLOR_GRAY2RGB)
+            image = repeat(image, 3, axis=2)
         elif image.shape[2] == 4:  # Image is RGBA
-            image = cvtColor(image, COLOR_RGBA2RGB)
+            image = image[:, :, :3]
     
     # Ensure image dtype is np.uint8 (if not already)
     if image.dtype != uint8:

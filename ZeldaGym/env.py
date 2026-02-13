@@ -1,11 +1,12 @@
-import os, uuid, hnswlib
+import os, uuid, hnswlib, logging
 
 import numpy as np
 import mediapy as media
 
+
 #from cv2 import resize
-from skimage.transform import resize
 from pyboy import PyBoy
+import pyboy.logging as pyboy_logging
 from gymnasium import Env, spaces
 from pathlib import Path
 from einops import rearrange
@@ -16,10 +17,21 @@ from ZeldaGym.modules.mem_addresses import (world_map_status_addr, x_pos_addr, y
                                             max_items_addr, cur_loaded_map, dungeon_flags_addr)
 from ZeldaGym.modules.actions import get_action_name
 
+pyboy_mb_logger = logging.getLogger("pyboy.core.mb")
+pyboy_mb_logger.setLevel(logging.ERROR)
+pyboy_mb_logger.propagate = False
+pyboy_logging.log_level("CRITICAL")
+
 class ZeldaGymEnv(Env):
+
+    def _silence_pyboy_warnings(self):
+        pyboy_logging.log_level("CRITICAL")
+        logging.getLogger("pyboy.core.mb").setLevel(logging.ERROR)
+        logging.getLogger("pyboy.pyboy").setLevel(logging.ERROR)
 
     def __init__(
         self, config=None):
+        self._silence_pyboy_warnings()
 
         self.debug = config['debug']
         self.s_path = Path(config['session_path'])
@@ -37,7 +49,15 @@ class ZeldaGymEnv(Env):
         self.instance_id = str(uuid.uuid4())[:8] if 'instance_id' not in config else config['instance_id']
         self.reward_scale = 1 if 'reward_scale' not in config else config['reward_scale']
         self.explore_weight = 1 if 'explore_weight' not in config else config['explore_weight']
+        self.explore_reward_scale = 0.35 if 'explore_reward_scale' not in config else config['explore_reward_scale']
+        self.action_penalty_scale = 1.0 if 'action_penalty_scale' not in config else config['action_penalty_scale']
         self.use_screen_explore = True if 'use_screen_explore' not in config else config['use_screen_explore']
+        self.curriculum_enabled = True if 'curriculum_enabled' not in config else config['curriculum_enabled']
+        self.curriculum_beach_state = config['curriculum_beach_state'] if 'curriculum_beach_state' in config else self.init_state
+        self.curriculum_village_state = config['curriculum_village_state'] if 'curriculum_village_state' in config else self.init_state
+        self.curriculum_dungeon_state = config['curriculum_dungeon_state'] if 'curriculum_dungeon_state' in config else self.init_state
+        self.curriculum_beach_episodes = 50 if 'curriculum_beach_episodes' not in config else config['curriculum_beach_episodes']
+        self.curriculum_village_episodes = 150 if 'curriculum_village_episodes' not in config else config['curriculum_village_episodes']
 
         # Input Map
         self.valid_actions = valid_actions
@@ -57,7 +77,12 @@ class ZeldaGymEnv(Env):
         self.current_item_held = (0, 0)
         self.dist_diff = 0
         self.distance = 0
+        self.distance_norm = 0.0
+        self.sim_dist_norm = 1.0
         self.labels = None
+        self.curriculum_phase = 'beach'
+        self.curriculum_state_path = self.init_state
+        self.invalid_action_count = 0
 
         # Create Shapes
         self.output_shape = (36, 40, 8)
@@ -71,18 +96,22 @@ class ZeldaGymEnv(Env):
         self.action_space = spaces.Discrete(len(self.valid_actions)) # (https://gymnasium.farama.org/api/spaces/fundamental/#discrete) https://gymnasium.farama.org/api/spaces/fundamental/#gymnasium.spaces.Discrete
         self.observation_space = spaces.Box(low=0, high=255, shape=self.output_full, dtype=np.uint8) # https://gymnasium.farama.org/api/spaces/fundamental/#box
 
+        headless_str = str(config['headless']).strip().lower()
+        is_headless = headless_str == "true"
+
         # Setup pyboy https://docs.pyboy.dk
-        if config['headless'].lower() == "true":
+        if is_headless:
             self.pyboy = PyBoy(config['gb_path'],window="null",) 
         else:
-            if config['headless'] == 'OpenGL':
+            if str(config['headless']).strip() == 'OpenGL':
                 self.pyboy = PyBoy(config['gb_path'],window="OpenGL",)
             else:
                 print('pyboy config window set')
                 self.pyboy = PyBoy(config['gb_path'],window="SDL2",)
 
         self.screen = self.pyboy.screen
-        self.pyboy.set_emulation_speed(0 if config['headless'].lower() == "true" else config['emulation_speed'])
+        self._silence_pyboy_warnings()
+        self.pyboy.set_emulation_speed(0 if is_headless else config['emulation_speed'])
         self.reset()
 
 
@@ -90,8 +119,10 @@ class ZeldaGymEnv(Env):
     # MARK: Reset
     def reset(self, seed=None):
         self.seed = seed
+        self._silence_pyboy_warnings()
+        self.curriculum_state_path, self.curriculum_phase = self.get_curriculum_state_for_reset()
         # restart game, skipping credits
-        with open(self.init_state, "rb") as f:
+        with open(self.curriculum_state_path, "rb") as f:
             self.pyboy.load_state(f)
 
         if self.use_screen_explore:
@@ -140,11 +171,17 @@ class ZeldaGymEnv(Env):
         self.total_action_reward = 0
         self.last_seen_tile_coords = {}
         self.ai_action = 0
+        self.requested_action = 0
+        self.invalid_action_count = 0
         self.died_count = 0
         self.step_count = 0
         self.current_level = self.get_levels_sum()
         self.progress_reward = self.get_game_state_reward()
         self.total_reward = sum([val for _, val in self.progress_reward.items()])
+        self.distance = 0.0
+        self.distance_norm = 0.0
+        self.sim_dist_norm = 1.0
+        self.dist_diff = 0.0
         self.reset_count += 1
         return self.render(), {}
     
@@ -154,7 +191,10 @@ class ZeldaGymEnv(Env):
     def render(self, reduce_res=True, add_memory=True, update_mem=True):
         game_pixel_render = self.screen.ndarray # (144, 160, 4)
         if reduce_res:
-            game_pixel_render = (255*resize(game_pixel_render, self.output_shape)).astype(np.int8)
+            rgb_frame = game_pixel_render[:, :, :3]
+            resized_rgb = rgb_frame[::4, ::4, :]
+            game_pixel_render = np.zeros(self.output_shape, dtype=np.uint8)
+            game_pixel_render[:, :, :3] = resized_rgb
             if update_mem:
                 self.recent_frames[0] = game_pixel_render
             if add_memory:
@@ -168,9 +208,20 @@ class ZeldaGymEnv(Env):
     def step(self, action):
         # Get Values from agent
         self.current_level = self.get_levels_sum()
-        self.ai_action = action
-        self.run_action_on_emulator(action)
-        self.append_agent_stats(action)
+        self.requested_action = int(action)
+        pre_x = self.read_m(x_pos_addr)
+        pre_y = self.read_m(y_pos_addr)
+        pre_health = self.read_m(current_health_addr)
+
+        self.ai_action, immediate_penalty = self.mask_invalid_action(self.requested_action)
+        self.total_action_reward += immediate_penalty
+        self.run_action_on_emulator(self.ai_action)
+        self.append_agent_stats(self.ai_action)
+
+        post_x = self.read_m(x_pos_addr)
+        post_y = self.read_m(y_pos_addr)
+        self.last_movement_delta = abs(int(post_x) - int(pre_x)) + abs(int(post_y) - int(pre_y))
+        self.last_health_delta = int(self.read_m(current_health_addr)) - int(pre_health)
 
 
         self.recent_frames = np.roll(self.recent_frames, 1, axis=0)
@@ -198,7 +249,7 @@ class ZeldaGymEnv(Env):
         self.last_health = self.read_m(current_health_addr)
 
         # shift over short term reward memory
-        self.recent_memory = np.roll(self.recent_memory, self.output_shape[2])
+        self.recent_memory = np.roll(self.recent_memory, self.output_shape[2], axis=0)
         self.recent_memory[0, 0] = min(new_prog[0] * 64, 255)
         self.recent_memory[0, 1] = min(new_prog[1] * 64, 255)
         self.recent_memory[0, 2] = min(new_prog[2] * 128, 255)
@@ -223,18 +274,12 @@ class ZeldaGymEnv(Env):
                 if int(action) < 4:
                     # release arrow
                     self.pyboy.send_input(self.release_arrow[action])
-                if int(action) >= 4 and action <= 5:   
+                elif int(action) in (4, 5):
                     # release button
                     self.pyboy.send_input(self.release_button[action - 4])
-                if int(action) > 5:
-                    # release Start Button
-                    self.pyboy.send_input(self.release_button[action - 5])
 
             if self.save_video and not self.fast_video:
                 self.add_video_frame()
-
-            if i == self.act_freq-1:
-                self.pyboy._tick(True)
 
             self.pyboy.tick()
 
@@ -260,6 +305,8 @@ class ZeldaGymEnv(Env):
         self.agent_stats.append({
             'step': self.step_count,
             'last_action': action,
+            'requested_action': self.requested_action,
+            'curriculum_phase': self.curriculum_phase,
             'x-position': x_pos,
             'y-position': y_pos,
             'items_hand': hands, 'items_inventory': Inventory,
@@ -270,6 +317,7 @@ class ZeldaGymEnv(Env):
             'health': self.read_m(current_health_addr),
             'explore_count': explore_count,
             'deaths': self.died_count,
+            'invalid_action_count': self.invalid_action_count,
             'healed': self.total_healing_rew,
             'dungeon_flags': dungeon_flags,
             'world': str(map_w),
@@ -361,11 +409,14 @@ class ZeldaGymEnv(Env):
             # check for nearest frame and add if current
             labels, distances = self.knn_index.knn_query(frame_vec, k = 1)
             self.labels = labels
-            self.distance = distances[0]
-            if distances[0] != 0:
-                self.dist_diff = self.similar_frame_dist / self.distance * 100
+            nearest_distance = float(distances[0][0])
+            self.distance = nearest_distance
+            denom = max(float(self.similar_frame_dist), 1.0)
+            self.distance_norm = float(np.clip(nearest_distance / denom, 0.0, 1.0))
+            self.sim_dist_norm = 1.0
+            self.dist_diff = float(np.clip(1.0 - self.distance_norm, 0.0, 1.0))
             map_w = tuple([self.read_m(a) for a in world_map_status_addr])
-            if map_w not in self.seen_tiles and distances[0]  != 0:    #if distances[0] > self.similar_frame_dist:
+            if map_w not in self.seen_tiles and nearest_distance != 0:    #if distances[0] > self.similar_frame_dist:
                 self.knn_index.add_items(frame_vec, np.array([self.knn_index.get_current_count()]))
 
 
@@ -391,7 +442,7 @@ class ZeldaGymEnv(Env):
             'level': self.get_levels_reward(),
             'heal': self.total_healing_rew,
             'dead': self.reward_scale*-0.4*self.died_count,
-            'explore': self.reward_scale * (self.explore_weight * self.get_knn_reward()), # will have to do for now till can sort out the vector dimestion so i can add more rewards [((self.reward_scale * (self.explore_weight * self.get_knn_reward())) + (self.reward_scale * self.total_tile_explore) + (self.reward_scale * self.total_coords_reward)) * 10]
+            'explore': self.reward_scale * self.explore_reward_scale * self.get_knn_reward(),
             'tile_explore': (self.reward_scale * self.total_tile_explore),
             'coord_explore': (self.reward_scale * self.total_coords_reward),
             'action': (self.reward_scale * self.total_action_reward),
@@ -429,20 +480,72 @@ class ZeldaGymEnv(Env):
         x_pos = self.read_m(x_pos_addr); y_pos = self.read_m(y_pos_addr)
         map_loaded = str(tuple([self.read_m(a) for a in world_map_status_addr]))
         if self.seen_tile_coords:
-            self.last_seen_tile_coords = self.seen_tile_coords
+            self.last_seen_tile_coords = {k: v.copy() for k, v in self.seen_tile_coords.items()}
         from ZeldaGym.modules.rewards import calc_tile_coords_rew
         self.total_coords_reward, self.seen_tile_coords = calc_tile_coords_rew(map_loaded, (x_pos, y_pos), self.seen_tile_coords, self.total_coords_reward, self.explore_weight)
     def get_action_reward(self):
         from ZeldaGym.modules.rewards import calc_action_rew
-        self.total_action_reward = calc_action_rew(self.seen_tile_coords, self.ai_action, self.total_action_reward, self.last_seen_tile_coords, self.reward_scale)
+        self.total_action_reward = calc_action_rew(
+            self.seen_tile_coords,
+            self.ai_action,
+            self.total_action_reward,
+            self.last_seen_tile_coords,
+            self.reward_scale,
+            self.last_movement_delta,
+            self.last_health_delta,
+            self.action_penalty_scale,
+        )
+        self.total_action_reward = float(np.clip(self.total_action_reward, -5.0, 5.0))
+
+    def get_curriculum_state_for_reset(self):
+        if not self.curriculum_enabled:
+            return self.init_state, 'single'
+
+        if self.reset_count < self.curriculum_beach_episodes:
+            phase = 'beach'
+            candidate = self.curriculum_beach_state
+        elif self.reset_count < self.curriculum_village_episodes:
+            phase = 'village'
+            candidate = self.curriculum_village_state
+        else:
+            phase = 'dungeon_entrance'
+            candidate = self.curriculum_dungeon_state
+
+        if candidate and Path(candidate).is_file():
+            return candidate, phase
+        return self.init_state, phase
+
+    def mask_invalid_action(self, action):
+        penalty = 0.0
+        masked_action = int(action)
+
+        left_item = self.read_m(0xDB00)
+        right_item = self.read_m(0xDB01)
+
+        if masked_action == 4 and left_item == 0:
+            self.invalid_action_count += 1
+            if self.curriculum_phase == 'dungeon_entrance':
+                masked_action = 6
+                penalty -= 0.005 * self.action_penalty_scale
+            else:
+                penalty -= 0.0008 * self.action_penalty_scale
+        elif masked_action == 5 and right_item == 0:
+            self.invalid_action_count += 1
+            if self.curriculum_phase == 'dungeon_entrance':
+                masked_action = 6
+                penalty -= 0.005 * self.action_penalty_scale
+            else:
+                penalty -= 0.0008 * self.action_penalty_scale
+
+        return masked_action, penalty
 
     # MARK: Save and Print Information, it's in the name
     def save_and_print_info(self, done, obs_memory):
-        prog_rew = self.progress_reward
+        prog_rew = dict(self.progress_reward)
         prog_rew['Action'] = int(self.ai_action)
-        prog_rew['Dist Diff'] = f'{float(self.dist_diff):7.2f}%'
-        prog_rew['Distances[0]'] = float(self.distance)
-        prog_rew['Sim_Dist_Diff'] = self.similar_frame_dist
+        prog_rew['Dist Diff'] = float(self.dist_diff)
+        prog_rew['Distances[0]'] = float(self.distance_norm)
+        prog_rew['Sim_Dist_Diff'] = float(self.sim_dist_norm)
         from ZeldaGym.modules.save_info import append_print_info
         append_print_info(self.print_rewards, self.instance_id, self.step_count, prog_rew, self.total_reward, self.vec_dim, self.obs_dim.shape[0])
 
@@ -456,6 +559,7 @@ class ZeldaGymEnv(Env):
 
         if self.save_video and done:
             self.model_frame_writer.close()
+            self.replay_frame_writer.close()
 
         if done:
             self.all_runs.append(self.progress_reward)
@@ -475,7 +579,6 @@ class ZeldaGymEnv(Env):
         self.model_frame_writer.add_image(model_frame)
 
         replay_frame = self.render(reduce_res=False)
-        replay_frame = (255*resize(replay_frame, self.replay_shape)).astype(np.uint8)
         from ZeldaGym.modules.media import convert_to_rgb
         replay_frame = convert_to_rgb(replay_frame)
         self.replay_frame_writer.add_image(replay_frame)
@@ -519,5 +622,24 @@ class ZeldaGymEnv(Env):
     # MARK: Item ID's
     def get_items_inventory(self,):
         from ZeldaGym.modules.item_ids import holding_item
-        held_items = holding_item()
+        held_items = holding_item(self.read_m(0xDB00), self.read_m(0xDB01))
         return held_items
+
+    def close(self):
+        if self.save_video:
+            if hasattr(self, 'model_frame_writer'):
+                try:
+                    self.model_frame_writer.close()
+                except Exception:
+                    pass
+            if hasattr(self, 'replay_frame_writer'):
+                try:
+                    self.replay_frame_writer.close()
+                except Exception:
+                    pass
+
+        if hasattr(self, 'pyboy'):
+            try:
+                self.pyboy.stop()
+            except Exception:
+                pass

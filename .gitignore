@@ -1,4 +1,7 @@
 __pycache__/
+.venv/
+.env/
 *.pyc
 *.gb
 *.gb.ram
+Sessions/

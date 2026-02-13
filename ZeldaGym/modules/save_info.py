@@ -14,7 +14,7 @@ def append_agent_statistics(s_path, instance_id, all_runs, agent_stats):
         dump(all_runs, f, indent=4)
     with catch_warnings():
         simplefilter("ignore")
-        DataFrame(agent_stats).to_csv(at_dir / Path(f'agent_stats_{instance_id}.csv.zip'), compression="zip", mode='a')
+        DataFrame(agent_stats).to_csv(at_dir / Path(f'agent_stats_{instance_id}.csv.zip'), compression="zip", mode='w')
 
 def append_final_stats(save_final_state, s_path, instance_id, reset_count, total_reward, render):
     if save_final_state:

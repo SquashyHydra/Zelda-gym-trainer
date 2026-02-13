@@ -14,10 +14,20 @@ env_config_default = {
     'sim_frame_dist': None,
     'use_screen_explore': None,
     'reward_scale': None,
-    'extra_buttons': None,
     'explore_weight': None,
     'process_num': None,
     'emulation_speed': None,
     'batch_size': None,
-    'checkpoint': None
+    'iteration_steps': None,
+    'train_timesteps': None,
+    'train_iterations': None,
+    'checkpoint': None,
+    'curriculum_enabled': None,
+    'curriculum_beach_state': None,
+    'curriculum_village_state': None,
+    'curriculum_dungeon_state': None,
+    'curriculum_beach_episodes': None,
+    'curriculum_village_episodes': None,
+    'explore_reward_scale': None,
+    'action_penalty_scale': None
 }

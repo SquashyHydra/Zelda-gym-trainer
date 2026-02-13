@@ -1,2 +1,2 @@
 @echo off
-python run_pretrained_interactive.py --headless false --process_num 1 --reward_scale 4 --save_video True --fast_video False --checkpoint .\Sessions\session_af38c1ff
+.env\Scripts\python.exe run_pretrained_interactive.py --headless False --process_num 1 --save_video False --fast_video False --print_rewards False --checkpoint .\Sessions\session_08b304ea

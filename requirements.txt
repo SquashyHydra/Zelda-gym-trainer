@@ -3,7 +3,6 @@ pyboy
 stable-baselines3
 mediapy
 gymnasium
-gym
 einops
 tensorboard
 hnswlib
