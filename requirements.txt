@@ -10,7 +10,7 @@ hnswlib
 wandb
 scikit-image
 scikit-learn
---extra-index-url https://download.pytorch.org/whl/cu118
+--extra-index-url https://download.pytorch.org/whl/cu130
 torch
 torchvision
 torchaudio
