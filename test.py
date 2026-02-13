@@ -1,3 +1,4 @@
+import os
 import warnings; warnings.filterwarnings("ignore", category=UserWarning, message="Using SDL2 binaries from pysdl2-dll")
 
 from torch import cuda, device
@@ -26,6 +27,8 @@ def make_env(rank, env_conf, seed=0):
     return _init
 
 if __name__ == '__main__':
+    os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+
     use_wandb_logging = False
 
     args = get_args()

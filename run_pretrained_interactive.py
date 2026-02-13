@@ -14,8 +14,6 @@ from ZeldaGym.env import ZeldaGymEnv
 from argparse_zelda import get_args, change_env
 from enviroment_config import env_config_default
 
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-
 def make_env(rank, env_conf, seed=0):
     def _init():
         env = ZeldaGymEnv(env_conf)
@@ -24,6 +22,7 @@ def make_env(rank, env_conf, seed=0):
     return _init
 
 if __name__ == "__main__":
+    os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
     ep_length = 2**23
     s_path = path[0] / Path("Sessions")
     makedirs(s_path, exist_ok=True)
