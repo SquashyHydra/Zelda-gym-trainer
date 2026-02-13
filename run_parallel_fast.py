@@ -1,4 +1,9 @@
+import os
 import warnings; warnings.filterwarnings("ignore", category=UserWarning, message="Using SDL2 binaries from pysdl2-dll")
+
+# Disable oneDNN optimizations for TensorFlow-based interactions
+# (prevents unexpected CPU optimizations / crashes)
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 from torch import cuda, device
 from sys import path
@@ -26,6 +31,8 @@ def make_env(rank, env_conf, seed=0):
     return _init
 
 if __name__ == '__main__':
+    
+
     use_wandb_logging = False
     ep_length = 2048 * 1
     sess_id = str(uuid4())[:8]

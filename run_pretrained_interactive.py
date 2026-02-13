@@ -1,3 +1,4 @@
+import os
 import warnings; warnings.filterwarnings("ignore", category=UserWarning, message="Using SDL2 binaries from pysdl2-dll")
 
 from torch import cuda, device
@@ -12,6 +13,8 @@ from stable_baselines3.common.utils import set_random_seed
 from ZeldaGym.env import ZeldaGymEnv
 from argparse_zelda import get_args, change_env
 from enviroment_config import env_config_default
+
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 def make_env(rank, env_conf, seed=0):
     def _init():
