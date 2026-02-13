@@ -1,4 +1,5 @@
 import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import warnings; warnings.filterwarnings("ignore", category=UserWarning, message="Using SDL2 binaries from pysdl2-dll")
 
 from torch import cuda, device
@@ -26,14 +27,21 @@ def make_env(rank, env_conf, seed=0):
     set_random_seed(seed)
     return _init
 
+def get_latest_checkpoint(checkpoint_folder):
+    checkpoint_path = None
+    max_iterations = 0
+    for file in os.listdir(checkpoint_folder):
+        if file.endswith(".zip"):
+            if file.startswith("zelda"):
+                total_iterations = file.replace("zelda_", "").replace("_steps.zip", "")
+            if max_iterations < int(total_iterations):
+                max_iterations = int(total_iterations)
+            checkpoint_path = f"{checkpoint_folder}\\zelda_{max_iterations}_steps.zip"
+    return checkpoint_path
+
 if __name__ == '__main__':
-    os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
     use_wandb_logging = False
     ep_length = 2048 * 1
-    sess_id = str(uuid4())[:8]
-    sess_path = path[0] / Path(f"Sessions/session_{sess_id}")
-    makedirs(sess_path, exist_ok=True)
-
     args = get_args()
     env_config = change_env(env_config_default, args)
 
@@ -67,9 +75,12 @@ if __name__ == '__main__':
         )
         callbacks.append(WandbCallback())
 
-    if exists(f"{path[0]}\\{env_config['checkpoint']}" + '.zip'):
+    checkpoint_folder = f"{path[0]}\\{env_config['checkpoint']}"
+    checkpoint_path = get_latest_checkpoint(checkpoint_folder)
+
+    if checkpoint_path is not None:
         print('\nloading checkpoint')
-        model = PPO.load(f'{path[0]}\\{env_config['checkpoint']}', env=env, device=proc_device)
+        model = PPO.load(checkpoint_path, env=env, device=proc_device)
         print('\ncheckpoint loaded')
         model.n_steps = ep_length
         model.n_envs = num_proc

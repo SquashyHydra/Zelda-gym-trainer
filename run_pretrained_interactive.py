@@ -1,4 +1,5 @@
 import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import warnings; warnings.filterwarnings("ignore", category=UserWarning, message="Using SDL2 binaries from pysdl2-dll")
 
 from torch import cuda, device
@@ -21,22 +22,30 @@ def make_env(rank, env_conf, seed=0):
     set_random_seed(seed)
     return _init
 
+def get_latest_checkpoint(checkpoint_folder):
+    checkpoint_path = None
+    max_iterations = 0
+    for file in os.listdir(checkpoint_folder):
+        if file.endswith(".zip"):
+            if file.startswith("zelda"):
+                total_iterations = file.replace("zelda_", "").replace("_steps.zip", "")
+            if max_iterations < int(total_iterations):
+                max_iterations = int(total_iterations)
+            checkpoint_path = f"{checkpoint_folder}\\zelda_{max_iterations}_steps.zip"
+    return checkpoint_path
+
 if __name__ == "__main__":
-    os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
     ep_length = 2**23
-    s_path = path[0] / Path("Sessions")
-    makedirs(s_path, exist_ok=True)
-    pt_path = s_path / Path(f"Pretrained")
+    args = get_args()
+    env_config = change_env(env_config_default, args)
+    sess_path = env_config['session_path']
+
+    pt_path = path[0] / Path("Sessions") / Path(f"Pretrained")
     makedirs(pt_path, exist_ok=True)
-    sess_path = pt_path / Path(f'session_{str(uuid4())[:8]}')
-    makedirs(sess_path, exist_ok=True)
     agent_file = sess_path / Path(f"agent_enable.txt")
     if not agent_file.is_file():
         with open(agent_file, 'w') as f:
             f.write("yes")
-    
-    args = get_args()
-    env_config = change_env(env_config_default, args)
 
     if not cuda.is_available():
         print(f"CUDA: {cuda.is_available()}")
@@ -49,8 +58,15 @@ if __name__ == "__main__":
 
     env = make_env(0, env_config)()
 
+    checkpoint_folder = f"{path[0]}\\{env_config['checkpoint']}"
+    checkpoint_path = get_latest_checkpoint(checkpoint_folder)
+
+    if checkpoint_path is None:
+        print(f"No checkpoint found at {checkpoint_folder}")
+        exit(1)
+
     print('\nloading checkpoint')
-    model = PPO.load(f'{path[0]}\\{env_config['checkpoint']}', env=env, custom_objects={'lr_schedule': 0, 'clip_range': 0}, device=proc_device)
+    model = PPO.load(checkpoint_path, env=env, custom_objects={'lr_schedule': 0, 'clip_range': 0}, device=proc_device)
     print('\ncheckpoint loaded')
 
     #keyboard.on_press_key("M", toggle_agent)
